@@ -6,7 +6,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 WORKDIR /home/pptruser/app
 
 COPY package*.json ./
-RUN npm install --only=production
+RUN npm install --only=production   # <-- changed from 'ci' to 'install'
 
 COPY . .
 
