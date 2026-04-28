@@ -24,8 +24,9 @@ function generatePassword() {
 }
 
 async function createSingleAccount(capsolverApiKey) {
+  // Use new headless mode to avoid deprecation warning
   const browser = await puppeteer.launch({
-    headless: true,
+    headless: 'new',  // fixes the warning
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -41,49 +42,68 @@ async function createSingleAccount(capsolverApiKey) {
 
   try {
     console.log(`[Creator] Trying: ${username}`);
-    await page.goto('https://www.roblox.com/account/signupredir', { waitUntil: 'networkidle2' });
+    await page.goto('https://www.roblox.com/account/signupredir', { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Fill the form
-    await page.waitForSelector('input[name="username"]', { timeout: 8000 });
+    // Wait for username field
+    await page.waitForSelector('input[name="username"]', { timeout: 10000 });
     await page.type('input[name="username"]', username);
     await page.type('input[name="password"]', password);
 
-    // Random birthday (over 13)
+    // Birthday (over 13)
     await page.select('select#Month', 'Jan');
     await page.select('select#Day', '15');
     await page.select('select#Year', '2000');
 
-    // Click sign-up
+    // Click sign-up button
     await page.click('span[data-testid="sign-up-button"]');
 
     // Wait for CAPTCHA iframe
-    await page.waitForSelector('iframe[title*="captcha"]', { timeout: 15000 });
+    await page.waitForSelector('iframe[title*="captcha"]', { timeout: 20000 });
 
-    // Solve CAPTCHA using external service
+    // Solve CAPTCHA
     const captchaToken = await solveFunCaptcha(page, capsolverApiKey);
+    console.log(`[Creator] CAPTCHA solved, token length: ${captchaToken.length}`);
 
     // Inject token and submit
     await page.evaluate((token) => {
       const captchaInput = document.querySelector('input[name="captcha-solution"]');
-      if (captchaInput) captchaInput.value = token;
-      const submitBtn = document.querySelector('input[type="submit"]');
-      if (submitBtn) submitBtn.click();
+      if (captchaInput) {
+        captchaInput.value = token;
+        const submitBtn = document.querySelector('input[type="submit"]');
+        if (submitBtn) submitBtn.click();
+      } else {
+        // Alternative: try to find the submit button inside the CAPTCHA iframe's parent
+        document.querySelector('form')?.submit();
+      }
     }, captchaToken);
 
-    // Wait for redirect to home page (account creation success)
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+    // Wait for navigation to dashboard/home page
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 });
 
-    // Extract .ROBLOSECURITY cookie
+    // Extract cookie
     const cookies = await page.cookies();
     const robloxCookie = cookies.find(c => c.name === '.ROBLOSECURITY')?.value;
 
-    if (!robloxCookie) throw new Error('No .ROBLOSECURITY cookie found');
+    if (!robloxCookie) {
+      // Dump cookies for debugging
+      console.error(`[Creator] Cookies found: ${cookies.map(c => c.name).join(', ')}`);
+      throw new Error('.ROBLOSECURITY cookie not found after signup');
+    }
 
     console.log(`[Success] ${username} | ${password}`);
     return { username, password, cookie: robloxCookie };
 
   } catch (err) {
     console.error(`[Creator] Failed for ${username}:`, err.message);
+    console.error(`[Creator] Stack:`, err.stack);
+    // Take screenshot for debugging (optional, can be removed if disk space is low)
+    try {
+      const screenshotPath = `/tmp/error-${username}.png`;
+      await page.screenshot({ path: screenshotPath });
+      console.log(`[Creator] Screenshot saved: ${screenshotPath}`);
+    } catch (ssErr) {
+      // Ignore screenshot errors
+    }
     return null;
   } finally {
     await browser.close();
