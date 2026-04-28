@@ -24,15 +24,15 @@ function generatePassword() {
 }
 
 async function createSingleAccount(capsolverApiKey) {
-  // Use new headless mode to avoid deprecation warning
   const browser = await puppeteer.launch({
-    headless: 'new',  // fixes the warning
+    headless: 'new', // Use new headless mode
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
-      '--disable-gpu'
+      '--disable-gpu',
+      '--window-size=1920,1080'
     ]
   });
 
@@ -42,68 +42,93 @@ async function createSingleAccount(capsolverApiKey) {
 
   try {
     console.log(`[Creator] Trying: ${username}`);
+    
+    // Set a realistic user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Go to signup page
     await page.goto('https://www.roblox.com/account/signupredir', { waitUntil: 'networkidle2', timeout: 30000 });
-
-    // Wait for username field
-    await page.waitForSelector('input[name="username"]', { timeout: 10000 });
-    await page.type('input[name="username"]', username);
-    await page.type('input[name="password"]', password);
-
-    // Birthday (over 13)
+    
+    // Log page title to debug
+    const title = await page.title();
+    console.log(`[Creator] Page title: ${title}`);
+    
+    // Take a screenshot of the page for debugging (optional)
+    await page.screenshot({ path: `/tmp/page-${username}.png` });
+    
+    // Try multiple selectors for username field
+    let usernameSelector = 'input[name="username"]';
+    let passwordSelector = 'input[name="password"]';
+    let signupButtonSelector = 'button[type="submit"], span[data-testid="sign-up-button"], input[type="submit"]';
+    
+    // Wait for either username field or a signup form
+    try {
+      await page.waitForSelector(usernameSelector, { timeout: 10000 });
+    } catch (err) {
+      // If not found, try to find any input field
+      console.log(`[Creator] Username selector not found, trying fallback...`);
+      const inputs = await page.$$('input');
+      console.log(`[Creator] Found ${inputs.length} input elements`);
+      if (inputs.length > 0) {
+        // Assume first input is username? Risky but better than failing
+        usernameSelector = 'input';
+      } else {
+        throw new Error('No input fields found on page');
+      }
+    }
+    
+    await page.type(usernameSelector, username);
+    await page.type(passwordSelector, password);
+    
+    // Birthday
     await page.select('select#Month', 'Jan');
     await page.select('select#Day', '15');
     await page.select('select#Year', '2000');
-
+    
     // Click sign-up button
-    await page.click('span[data-testid="sign-up-button"]');
-
+    await page.click(signupButtonSelector);
+    
     // Wait for CAPTCHA iframe
-    await page.waitForSelector('iframe[title*="captcha"]', { timeout: 20000 });
-
-    // Solve CAPTCHA
+    await page.waitForSelector('iframe[title*="captcha"], iframe[src*="funcaptcha"]', { timeout: 20000 });
+    
     const captchaToken = await solveFunCaptcha(page, capsolverApiKey);
     console.log(`[Creator] CAPTCHA solved, token length: ${captchaToken.length}`);
-
-    // Inject token and submit
+    
+    // Submit token
     await page.evaluate((token) => {
       const captchaInput = document.querySelector('input[name="captcha-solution"]');
       if (captchaInput) {
         captchaInput.value = token;
-        const submitBtn = document.querySelector('input[type="submit"]');
+        const submitBtn = document.querySelector('button[type="submit"], input[type="submit"]');
         if (submitBtn) submitBtn.click();
       } else {
-        // Alternative: try to find the submit button inside the CAPTCHA iframe's parent
-        document.querySelector('form')?.submit();
+        // Try to find the form and submit
+        const form = document.querySelector('form');
+        if (form) form.submit();
       }
     }, captchaToken);
-
-    // Wait for navigation to dashboard/home page
+    
+    // Wait for navigation to dashboard
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 45000 });
-
-    // Extract cookie
+    
+    // Get cookies
     const cookies = await page.cookies();
     const robloxCookie = cookies.find(c => c.name === '.ROBLOSECURITY')?.value;
-
+    
     if (!robloxCookie) {
-      // Dump cookies for debugging
-      console.error(`[Creator] Cookies found: ${cookies.map(c => c.name).join(', ')}`);
-      throw new Error('.ROBLOSECURITY cookie not found after signup');
+      throw new Error('.ROBLOSECURITY cookie not found');
     }
-
+    
     console.log(`[Success] ${username} | ${password}`);
     return { username, password, cookie: robloxCookie };
-
+    
   } catch (err) {
     console.error(`[Creator] Failed for ${username}:`, err.message);
-    console.error(`[Creator] Stack:`, err.stack);
-    // Take screenshot for debugging (optional, can be removed if disk space is low)
+    // Save screenshot on error
     try {
-      const screenshotPath = `/tmp/error-${username}.png`;
-      await page.screenshot({ path: screenshotPath });
-      console.log(`[Creator] Screenshot saved: ${screenshotPath}`);
-    } catch (ssErr) {
-      // Ignore screenshot errors
-    }
+      await page.screenshot({ path: `/tmp/error-${username}.png` });
+      console.log(`[Creator] Error screenshot saved`);
+    } catch (ssErr) {}
     return null;
   } finally {
     await browser.close();
